@@ -615,6 +615,23 @@
   }
 
   // src/scraper.js
+  var FETCH = {
+    maxRetries: 3,
+    retryBaseMs: 1500,
+    retryMaxMs: 8e3,
+    retryJitterMin: 500,
+    retryJitterMax: 1500,
+    dsignDelayMin: 300,
+    dsignDelayMax: 800
+  };
+  var AUTHOR_LINK_SELECTORS = [
+    ".pls .authi a.xw1",
+    '.pls a[href*="space-uid-"]',
+    '.authi a[href*="space-uid-"]',
+    '.authi a[href*="uid="]',
+    'a[href*="space-uid-"]',
+    'a[href*="mod=space&uid="]'
+  ].join(",");
   function collectPostNodes(doc) {
     const explicitNodes = Array.from(
       doc.querySelectorAll('div[id^="post_"], li[id^="post_"], div[id^="pid"], li[id^="pid"]')
@@ -635,39 +652,26 @@
       ".pcb .t_f"
     ].join(","));
   }
+  function findAuthorLink(postNode) {
+    return postNode.querySelector(AUTHOR_LINK_SELECTORS);
+  }
   function extractAuthorName(postNode) {
-    const selectors = [
-      ".pls .authi a.xw1",
-      '.pls a[href*="space-uid-"]',
-      ".user_info .name",
-      ".userinfo .name",
-      '.authi a[href*="space-uid-"]',
-      '.authi a[href*="uid="]',
-      'a[href*="space-uid-"]',
-      'a[href*="mod=space&uid="]'
-    ];
-    for (const selector of selectors) {
-      const name = textOf(postNode.querySelector(selector));
-      if (name) return name;
-    }
-    return "未知作者";
+    const fromLink = textOf(findAuthorLink(postNode));
+    if (fromLink) return fromLink;
+    const fromMeta = textOf(postNode.querySelector(".user_info .name, .userinfo .name"));
+    return fromMeta || "未知作者";
   }
   function extractAuthorProfileUrl(postNode) {
-    const link = postNode.querySelector([
-      ".pls .authi a.xw1",
-      '.pls a[href*="space-uid-"]',
-      '.authi a[href*="space-uid-"]',
-      '.authi a[href*="uid="]',
-      'a[href*="space-uid-"]',
-      'a[href*="mod=space&uid="]'
-    ].join(","));
+    const link = findAuthorLink(postNode);
     return link ? new URL(link.getAttribute("href"), location.origin).toString() : void 0;
   }
-  function extractUidFromPost(postNode) {
-    const href = extractAuthorProfileUrl(postNode);
+  function uidFromProfileUrl(href) {
     if (!href) return void 0;
     const match = href.match(/(?:uid=|space-uid-)(\d+)/);
     return match ? match[1] : void 0;
+  }
+  function extractUidFromPost(postNode) {
+    return uidFromProfileUrl(extractAuthorProfileUrl(postNode));
   }
   function extractFloor(postNode) {
     const floorLink = postNode.querySelector(".plc .pi strong a") || postNode.querySelector('.plc .pi a[href*="findpost"]') || Array.from(postNode.querySelectorAll(".plc .pi a, .authi a, a")).find((node) => /#/.test(node.textContent || ""));
@@ -740,37 +744,32 @@
     text = text.replace(/\s{2,}/g, " ").trim();
     return text;
   }
+  function tidFromUrl(url) {
+    if (!(url instanceof URL)) return null;
+    return url.searchParams.get("tid") || (url.pathname.match(/thread-(\d+)-/) || [])[1] || null;
+  }
   function extractTid(url, doc) {
-    const searchTid = url.searchParams.get("tid");
-    if (searchTid) return searchTid;
-    const pathMatch = url.pathname.match(/thread-(\d+)-/);
-    if (pathMatch) return pathMatch[1];
+    const fromUrl = tidFromUrl(url);
+    if (fromUrl) return fromUrl;
     const copyLink = doc.querySelector('a[href*="thread-"]');
     const href = copyLink ? copyLink.getAttribute("href") || "" : "";
-    const hrefMatch = href.match(/thread-(\d+)-/);
-    if (hrefMatch) return hrefMatch[1];
+    const fromDom = (href.match(/thread-(\d+)-/) || [])[1];
+    if (fromDom) return fromDom;
     throw new Error("无法解析 tid");
   }
-  function extractThreadStylePage(pathname) {
-    const match = pathname.match(/thread-\d+-(\d+)-/);
-    return match ? match[1] : null;
-  }
-  function extractThreadIdFromUrl(urlLike) {
-    if (!(urlLike instanceof URL)) return null;
-    const searchTid = urlLike.searchParams.get("tid");
-    if (searchTid) return searchTid;
-    const pathMatch = urlLike.pathname.match(/thread-(\d+)-/);
-    return pathMatch ? pathMatch[1] : null;
+  function pageFromPath(pathname) {
+    return (pathname.match(/thread-\d+-(\d+)-/) || [])[1] || null;
   }
   function isSameThreadPage(targetUrl, currentUrl) {
     if (!(targetUrl instanceof URL) || !(currentUrl instanceof URL)) return false;
-    const currentTid = extractThreadIdFromUrl(currentUrl);
-    const targetTid = extractThreadIdFromUrl(targetUrl);
+    const currentTid = tidFromUrl(currentUrl);
+    const targetTid = tidFromUrl(targetUrl);
     if (currentTid && targetTid) return currentTid === targetTid;
     return targetUrl.pathname === currentUrl.pathname;
   }
   function parsePageValue(urlLike) {
-    const value = urlLike instanceof URL ? urlLike.searchParams.get("page") || extractThreadStylePage(urlLike.pathname) || "1" : "1";
+    if (!(urlLike instanceof URL)) return void 0;
+    const value = urlLike.searchParams.get("page") || pageFromPath(urlLike.pathname) || "1";
     const parsed = parseInt(value, 10);
     return Number.isNaN(parsed) ? void 0 : parsed;
   }
@@ -941,7 +940,7 @@
   }
   async function fetchThreadPage(url) {
     let currentUrl = url;
-    for (let attempt = 1; attempt <= 3; attempt += 1) {
+    for (let attempt = 1; attempt <= FETCH.maxRetries; attempt += 1) {
       try {
         log(`请求第 ${attempt} 次：${currentUrl}`);
         const response = await fetch(currentUrl, { credentials: "include", method: "GET" });
@@ -952,7 +951,7 @@
         if (challengeUrl) {
           log(`检测到 _dsign 安全验证，重定向至: ${challengeUrl}`);
           currentUrl = challengeUrl;
-          await delay(randomInt(300, 800));
+          await delay(randomInt(FETCH.dsignDelayMin, FETCH.dsignDelayMax));
           continue;
         }
         if (looksLikeBlockedPage(html)) throw new Error("命中登录/权限/重载提示页");
@@ -961,8 +960,9 @@
         if (!isSupportedThreadPage(doc, url)) throw new Error("返回内容不是有效线程页");
         return doc;
       } catch (error) {
-        if (attempt >= 3) throw error;
-        await delay(Math.min(1500 * Math.pow(2, attempt - 1), 8e3) + randomInt(500, 1500));
+        if (attempt >= FETCH.maxRetries) throw error;
+        const backoff = Math.min(FETCH.retryBaseMs * Math.pow(2, attempt - 1), FETCH.retryMaxMs);
+        await delay(backoff + randomInt(FETCH.retryJitterMin, FETCH.retryJitterMax));
       }
     }
     throw new Error("抓取失败");
@@ -1031,40 +1031,57 @@
 
   // src/frontmatter.js
   var KNOWN_FIELD_ORDER = ["标题", "原作", "作者", "译者", "分级", "警告", "配对", "标签", "摘要", "注释", "原文地址"];
-  function normalizeFrontMatter(frontMatter, context) {
-    const normalized = {};
-    const source = frontMatter || {};
-    KNOWN_FIELD_ORDER.forEach((key) => {
-      if (source[key]) {
-        normalized[key] = source[key];
-      }
-    });
-    Object.keys(source).forEach((key) => {
-      if (!(key in normalized) && source[key]) {
-        normalized[key] = source[key];
-      }
-    });
-    if (!normalized["标题"]) {
-      normalized["标题"] = context.title;
-    }
-    if (!normalized["作者"] && context.lzName) {
-      normalized["作者"] = context.lzName;
-    }
-    return normalized;
-  }
+  var FRONT_MATTER_ALIASES = {
+    cp: "配对",
+    CP: "配对",
+    配對: "配对",
+    tag: "标签",
+    tags: "标签",
+    Tags: "标签",
+    summary: "摘要",
+    Summary: "摘要",
+    简介: "摘要",
+    notes: "注释",
+    Notes: "注释",
+    备注: "注释",
+    note: "注释",
+    原文链接: "原文地址",
+    原文: "原文地址",
+    链接: "原文地址",
+    link: "原文地址",
+    Link: "原文地址",
+    分类: "分类",
+    类型: "分类"
+  };
   function orderFrontMatter(result) {
     const ordered = {};
     KNOWN_FIELD_ORDER.forEach((key) => {
-      if (key in result) {
-        ordered[key] = result[key];
-      }
+      if (key in result) ordered[key] = result[key];
     });
     Object.keys(result).forEach((key) => {
-      if (!(key in ordered)) {
-        ordered[key] = result[key];
-      }
+      if (!(key in ordered)) ordered[key] = result[key];
     });
     return ordered;
+  }
+  function normalizeFrontMatter(frontMatter, context) {
+    const source = frontMatter || {};
+    const normalized = orderFrontMatter(
+      Object.fromEntries(Object.entries(source).filter(([, value]) => value))
+    );
+    if (!normalized["标题"]) normalized["标题"] = context.title;
+    if (!normalized["作者"] && context.lzName) normalized["作者"] = context.lzName;
+    return normalized;
+  }
+  function resolveMainAuthor({ authorMode, normalizedFrontMatter, context, posts, targetUid }) {
+    var _a, _b;
+    if (authorMode === "lz") {
+      return normalizedFrontMatter["作者"] || context.lzName;
+    }
+    if (authorMode === "uid") {
+      const name = ((_a = posts[0]) == null ? void 0 : _a.authorName) || "";
+      return `${name}${targetUid ? ` (${targetUid})` : ""}`;
+    }
+    return normalizedFrontMatter["作者"] || context.lzName || ((_b = posts[0]) == null ? void 0 : _b.authorName) || "未知作者";
   }
 
   // src/parser.js
@@ -1119,15 +1136,17 @@
       if (!messageNode) return null;
       const cleanFragment = messageNode.cloneNode(true);
       cleanPostFragment(cleanFragment);
+      const authorProfileUrl = extractAuthorProfileUrl(postNode);
+      const authorUid = uidFromProfileUrl(authorProfileUrl);
       return {
         postId: postNode.id.replace("post_", ""),
         page: context.currentPage,
         floor: extractFloor(postNode),
         authorName: extractAuthorName(postNode),
-        authorUid: extractUidFromPost(postNode),
-        authorProfileUrl: extractAuthorProfileUrl(postNode),
+        authorUid,
+        authorProfileUrl,
         publishedAt: extractPublishedAt(postNode),
-        isLz: extractUidFromPost(postNode) === context.lzUid,
+        isLz: authorUid === context.lzUid,
         fromMobile: /来自手机/.test(textOf(postNode.querySelector(".authi"))),
         rawHtml: messageNode.innerHTML,
         cleanHtml: cleanFragment.innerHTML,
@@ -1140,7 +1159,7 @@
     working.querySelectorAll("br").forEach((br) => br.replaceWith("\n"));
     let text = working.textContent || "";
     text = text.replace(/\r/g, "");
-    text = text.replace(/ /g, " ");
+    text = text.replace(/\u00a0/g, " ");
     text = text.replace(/[ \t]+\n/g, "\n");
     text = text.replace(/\n{3,}/g, "\n\n");
     return text.split("\n").map((line) => line.trim()).filter(Boolean);
@@ -1148,36 +1167,13 @@
   function extractFrontMatter(doc) {
     const firstPost = collectPostNodes(doc)[0];
     if (!firstPost) return {};
-    const aliasMap = {
-      cp: "配对",
-      CP: "配对",
-      配對: "配对",
-      tag: "标签",
-      tags: "标签",
-      Tags: "标签",
-      summary: "摘要",
-      Summary: "摘要",
-      简介: "摘要",
-      notes: "注释",
-      Notes: "注释",
-      备注: "注释",
-      note: "注释",
-      原文链接: "原文地址",
-      原文: "原文地址",
-      链接: "原文地址",
-      link: "原文地址",
-      Link: "原文地址",
-      分类: "分类",
-      类型: "分类"
-    };
-    const knownFieldOrder = ["标题", "原作", "作者", "译者", "分级", "警告", "配对", "标签", "摘要", "注释", "原文地址"];
     const result = {};
     const typeRows = Array.from(firstPost.querySelectorAll(".typeoption tr, .cgtl tr"));
     typeRows.forEach((row) => {
       const key = textOf(row.querySelector("th")).replace(/[：:]\s*$/, "").trim();
       const value = textOf(row.querySelector("td"));
       if (!key || !value) return;
-      const normalizedKey = aliasMap[key] || key;
+      const normalizedKey = FRONT_MATTER_ALIASES[key] || key;
       if (!(normalizedKey in result)) result[normalizedKey] = value;
     });
     const message = findMessageNode(firstPost);
@@ -1192,7 +1188,7 @@
       const value = match[2].trim();
       if (!value) return;
       const normalizedKey = aliasMap[rawKey] || rawKey;
-      if (!knownFieldOrder.includes(normalizedKey) && rawKey.length > 8) return;
+      if (!KNOWN_FIELD_ORDER.includes(normalizedKey) && rawKey.length > 8) return;
       if (!(normalizedKey in result)) result[normalizedKey] = value;
     });
     return orderFrontMatter(result);
@@ -1216,10 +1212,9 @@
 
   // src/txt.js
   function renderTxt({ context, posts, authorMode, targetUid, frontMatter, failures, partial }) {
-    var _a, _b;
     const lines = [];
     const normalizedFrontMatter = normalizeFrontMatter(frontMatter, context);
-    const mainAuthor = authorMode === "lz" ? normalizedFrontMatter["作者"] || context.lzName : authorMode === "uid" ? `${((_a = posts[0]) == null ? void 0 : _a.authorName) || ""} (${targetUid})` : normalizedFrontMatter["作者"] || context.lzName || ((_b = posts[0]) == null ? void 0 : _b.authorName) || "未知作者";
+    const mainAuthor = resolveMainAuthor({ authorMode, normalizedFrontMatter, context, posts, targetUid });
     lines.push(`标题: ${context.title}`);
     lines.push(`作者: ${mainAuthor}`);
     lines.push(`来源: ${context.canonicalUrl || context.currentUrl}`);
@@ -1581,9 +1576,8 @@ ${segment.body}`.trim();
     }));
   }
   function buildEpub({ context, posts, authorMode, chapterMode, customHeadingRegex, targetUid, frontMatter, failures, partial }) {
-    var _a, _b;
     const normalizedFrontMatter = normalizeFrontMatter(frontMatter, context);
-    const mainAuthor = authorMode === "lz" ? normalizedFrontMatter["作者"] || context.lzName : authorMode === "uid" ? `${((_a = posts[0]) == null ? void 0 : _a.authorName) || ""}${targetUid ? ` (${targetUid})` : ""}` : normalizedFrontMatter["作者"] || context.lzName || ((_b = posts[0]) == null ? void 0 : _b.authorName) || "未知作者";
+    const mainAuthor = resolveMainAuthor({ authorMode, normalizedFrontMatter, context, posts, targetUid });
     const bookId = `urn:uuid:${makeUuidLike(context.tid, context.title, mainAuthor)}`;
     const lang = "zh-CN";
     const nowIso = (/* @__PURE__ */ new Date()).toISOString();

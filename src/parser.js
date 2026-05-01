@@ -1,11 +1,11 @@
 import { textOf } from "./utils.js";
-import { orderFrontMatter } from "./frontmatter.js";
+import { orderFrontMatter, FRONT_MATTER_ALIASES, KNOWN_FIELD_ORDER } from "./frontmatter.js";
 import {
   collectPostNodes,
   findMessageNode,
   extractAuthorName,
-  extractUidFromPost,
   extractAuthorProfileUrl,
+  uidFromProfileUrl,
   extractFloor,
   extractPublishedAt,
 } from "./scraper.js";
@@ -73,15 +73,18 @@ export function extractPosts(doc, context) {
     const cleanFragment = messageNode.cloneNode(true);
     cleanPostFragment(cleanFragment);
 
+    const authorProfileUrl = extractAuthorProfileUrl(postNode);
+    const authorUid = uidFromProfileUrl(authorProfileUrl);
+
     return {
       postId: postNode.id.replace("post_", ""),
       page: context.currentPage,
       floor: extractFloor(postNode),
       authorName: extractAuthorName(postNode),
-      authorUid: extractUidFromPost(postNode),
-      authorProfileUrl: extractAuthorProfileUrl(postNode),
+      authorUid,
+      authorProfileUrl,
       publishedAt: extractPublishedAt(postNode),
-      isLz: extractUidFromPost(postNode) === context.lzUid,
+      isLz: authorUid === context.lzUid,
       fromMobile: /来自手机/.test(textOf(postNode.querySelector(".authi"))),
       rawHtml: messageNode.innerHTML,
       cleanHtml: cleanFragment.innerHTML,
@@ -97,7 +100,7 @@ function extractStructuredLines(root) {
   working.querySelectorAll("br").forEach((br) => br.replaceWith("\n"));
   let text = working.textContent || "";
   text = text.replace(/\r/g, "");
-  text = text.replace(/ /g, " ");
+  text = text.replace(/\u00a0/g, " ");
   text = text.replace(/[ \t]+\n/g, "\n");
   text = text.replace(/\n{3,}/g, "\n\n");
   return text.split("\n").map((line) => line.trim()).filter(Boolean);
@@ -107,16 +110,6 @@ export function extractFrontMatter(doc) {
   const firstPost = collectPostNodes(doc)[0];
   if (!firstPost) return {};
 
-  const aliasMap = {
-    cp: "配对", CP: "配对", 配對: "配对",
-    tag: "标签", tags: "标签", Tags: "标签",
-    summary: "摘要", Summary: "摘要", 简介: "摘要",
-    notes: "注释", Notes: "注释", 备注: "注释", note: "注释",
-    原文链接: "原文地址", 原文: "原文地址", 链接: "原文地址",
-    link: "原文地址", Link: "原文地址",
-    分类: "分类", 类型: "分类",
-  };
-  const knownFieldOrder = ["标题", "原作", "作者", "译者", "分级", "警告", "配对", "标签", "摘要", "注释", "原文地址"];
   const result = {};
 
   const typeRows = Array.from(firstPost.querySelectorAll(".typeoption tr, .cgtl tr"));
@@ -124,7 +117,7 @@ export function extractFrontMatter(doc) {
     const key = textOf(row.querySelector("th")).replace(/[：:]\s*$/, "").trim();
     const value = textOf(row.querySelector("td"));
     if (!key || !value) return;
-    const normalizedKey = aliasMap[key] || key;
+    const normalizedKey = FRONT_MATTER_ALIASES[key] || key;
     if (!(normalizedKey in result)) result[normalizedKey] = value;
   });
 
@@ -142,7 +135,7 @@ export function extractFrontMatter(doc) {
     const value = match[2].trim();
     if (!value) return;
     const normalizedKey = aliasMap[rawKey] || rawKey;
-    if (!knownFieldOrder.includes(normalizedKey) && rawKey.length > 8) return;
+    if (!KNOWN_FIELD_ORDER.includes(normalizedKey) && rawKey.length > 8) return;
     if (!(normalizedKey in result)) result[normalizedKey] = value;
   });
 

@@ -1,14 +1,10 @@
 import { sanitizeFilename } from "./utils.js";
-import { normalizeFrontMatter } from "./frontmatter.js";
+import { normalizeFrontMatter, resolveMainAuthor } from "./frontmatter.js";
 
 export function renderTxt({ context, posts, authorMode, targetUid, frontMatter, failures, partial }) {
   const lines = [];
   const normalizedFrontMatter = normalizeFrontMatter(frontMatter, context);
-  const mainAuthor = authorMode === "lz"
-    ? normalizedFrontMatter["作者"] || context.lzName
-    : authorMode === "uid"
-      ? `${posts[0]?.authorName || ""} (${targetUid})`
-      : normalizedFrontMatter["作者"] || context.lzName || posts[0]?.authorName || "未知作者";
+  const mainAuthor = resolveMainAuthor({ authorMode, normalizedFrontMatter, context, posts, targetUid });
 
   lines.push(`标题: ${context.title}`);
   lines.push(`作者: ${mainAuthor}`);

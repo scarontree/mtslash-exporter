@@ -1,6 +1,6 @@
 import { createZip } from "./zip.js";
 import { escapeXml, escapeAttribute } from "./utils.js";
-import { normalizeFrontMatter } from "./frontmatter.js";
+import { normalizeFrontMatter, resolveMainAuthor } from "./frontmatter.js";
 
 function makeUuidLike(...parts) {
   const seed = parts.join("|");
@@ -244,11 +244,7 @@ function buildEpubChapters(posts, chapterMode, customHeadingRegex) {
 
 export function buildEpub({ context, posts, authorMode, chapterMode, customHeadingRegex, targetUid, frontMatter, failures, partial }) {
   const normalizedFrontMatter = normalizeFrontMatter(frontMatter, context);
-  const mainAuthor = authorMode === "lz"
-    ? normalizedFrontMatter["作者"] || context.lzName
-    : authorMode === "uid"
-      ? `${posts[0]?.authorName || ""}${targetUid ? ` (${targetUid})` : ""}`
-      : normalizedFrontMatter["作者"] || context.lzName || posts[0]?.authorName || "未知作者";
+  const mainAuthor = resolveMainAuthor({ authorMode, normalizedFrontMatter, context, posts, targetUid });
   const bookId = `urn:uuid:${makeUuidLike(context.tid, context.title, mainAuthor)}`;
   const lang = "zh-CN";
   const nowIso = new Date().toISOString();

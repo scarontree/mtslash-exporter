@@ -1,7 +1,26 @@
 import { textOf, delay, randomInt } from "./utils.js";
 import { log } from "./ui.js";
 
+const FETCH = {
+  maxRetries: 3,
+  retryBaseMs: 1500,
+  retryMaxMs: 8000,
+  retryJitterMin: 500,
+  retryJitterMax: 1500,
+  dsignDelayMin: 300,
+  dsignDelayMax: 800,
+};
+
 // ─── DOM helpers ────────────────────────────────────────────────────────────
+
+const AUTHOR_LINK_SELECTORS = [
+  ".pls .authi a.xw1",
+  '.pls a[href*="space-uid-"]',
+  '.authi a[href*="space-uid-"]',
+  '.authi a[href*="uid="]',
+  'a[href*="space-uid-"]',
+  'a[href*="mod=space&uid="]',
+].join(",");
 
 export function collectPostNodes(doc) {
   const explicitNodes = Array.from(
@@ -27,41 +46,30 @@ export function findMessageNode(postNode) {
   ].join(","));
 }
 
+function findAuthorLink(postNode) {
+  return postNode.querySelector(AUTHOR_LINK_SELECTORS);
+}
+
 export function extractAuthorName(postNode) {
-  const selectors = [
-    ".pls .authi a.xw1",
-    '.pls a[href*="space-uid-"]',
-    ".user_info .name",
-    ".userinfo .name",
-    '.authi a[href*="space-uid-"]',
-    '.authi a[href*="uid="]',
-    'a[href*="space-uid-"]',
-    'a[href*="mod=space&uid="]',
-  ];
-  for (const selector of selectors) {
-    const name = textOf(postNode.querySelector(selector));
-    if (name) return name;
-  }
-  return "未知作者";
+  const fromLink = textOf(findAuthorLink(postNode));
+  if (fromLink) return fromLink;
+  const fromMeta = textOf(postNode.querySelector(".user_info .name, .userinfo .name"));
+  return fromMeta || "未知作者";
 }
 
 export function extractAuthorProfileUrl(postNode) {
-  const link = postNode.querySelector([
-    ".pls .authi a.xw1",
-    '.pls a[href*="space-uid-"]',
-    '.authi a[href*="space-uid-"]',
-    '.authi a[href*="uid="]',
-    'a[href*="space-uid-"]',
-    'a[href*="mod=space&uid="]',
-  ].join(","));
+  const link = findAuthorLink(postNode);
   return link ? new URL(link.getAttribute("href"), location.origin).toString() : undefined;
 }
 
-export function extractUidFromPost(postNode) {
-  const href = extractAuthorProfileUrl(postNode);
+export function uidFromProfileUrl(href) {
   if (!href) return undefined;
   const match = href.match(/(?:uid=|space-uid-)(\d+)/);
   return match ? match[1] : undefined;
+}
+
+export function extractUidFromPost(postNode) {
+  return uidFromProfileUrl(extractAuthorProfileUrl(postNode));
 }
 
 export function extractFloor(postNode) {
@@ -150,43 +158,38 @@ function cleanTitleElement(el) {
 
 // ─── URL/TID helpers ────────────────────────────────────────────────────────
 
+function tidFromUrl(url) {
+  if (!(url instanceof URL)) return null;
+  return url.searchParams.get("tid")
+    || (url.pathname.match(/thread-(\d+)-/) || [])[1]
+    || null;
+}
+
 export function extractTid(url, doc) {
-  const searchTid = url.searchParams.get("tid");
-  if (searchTid) return searchTid;
-  const pathMatch = url.pathname.match(/thread-(\d+)-/);
-  if (pathMatch) return pathMatch[1];
+  const fromUrl = tidFromUrl(url);
+  if (fromUrl) return fromUrl;
   const copyLink = doc.querySelector('a[href*="thread-"]');
   const href = copyLink ? copyLink.getAttribute("href") || "" : "";
-  const hrefMatch = href.match(/thread-(\d+)-/);
-  if (hrefMatch) return hrefMatch[1];
+  const fromDom = (href.match(/thread-(\d+)-/) || [])[1];
+  if (fromDom) return fromDom;
   throw new Error("无法解析 tid");
 }
 
-function extractThreadStylePage(pathname) {
-  const match = pathname.match(/thread-\d+-(\d+)-/);
-  return match ? match[1] : null;
-}
-
-function extractThreadIdFromUrl(urlLike) {
-  if (!(urlLike instanceof URL)) return null;
-  const searchTid = urlLike.searchParams.get("tid");
-  if (searchTid) return searchTid;
-  const pathMatch = urlLike.pathname.match(/thread-(\d+)-/);
-  return pathMatch ? pathMatch[1] : null;
+function pageFromPath(pathname) {
+  return (pathname.match(/thread-\d+-(\d+)-/) || [])[1] || null;
 }
 
 function isSameThreadPage(targetUrl, currentUrl) {
   if (!(targetUrl instanceof URL) || !(currentUrl instanceof URL)) return false;
-  const currentTid = extractThreadIdFromUrl(currentUrl);
-  const targetTid = extractThreadIdFromUrl(targetUrl);
+  const currentTid = tidFromUrl(currentUrl);
+  const targetTid = tidFromUrl(targetUrl);
   if (currentTid && targetTid) return currentTid === targetTid;
   return targetUrl.pathname === currentUrl.pathname;
 }
 
 function parsePageValue(urlLike) {
-  const value = urlLike instanceof URL
-    ? urlLike.searchParams.get("page") || extractThreadStylePage(urlLike.pathname) || "1"
-    : "1";
+  if (!(urlLike instanceof URL)) return undefined;
+  const value = urlLike.searchParams.get("page") || pageFromPath(urlLike.pathname) || "1";
   const parsed = parseInt(value, 10);
   return Number.isNaN(parsed) ? undefined : parsed;
 }
@@ -401,7 +404,7 @@ export function extractDsignChallengeUrl(html, originalUrl) {
 
 export async function fetchThreadPage(url) {
   let currentUrl = url;
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
+  for (let attempt = 1; attempt <= FETCH.maxRetries; attempt += 1) {
     try {
       log(`请求第 ${attempt} 次：${currentUrl}`);
       const response = await fetch(currentUrl, { credentials: "include", method: "GET" });
@@ -413,7 +416,7 @@ export async function fetchThreadPage(url) {
       if (challengeUrl) {
         log(`检测到 _dsign 安全验证，重定向至: ${challengeUrl}`);
         currentUrl = challengeUrl;
-        await delay(randomInt(300, 800));
+        await delay(randomInt(FETCH.dsignDelayMin, FETCH.dsignDelayMax));
         continue;
       }
 
@@ -424,8 +427,9 @@ export async function fetchThreadPage(url) {
       if (!isSupportedThreadPage(doc, url)) throw new Error("返回内容不是有效线程页");
       return doc;
     } catch (error) {
-      if (attempt >= 3) throw error;
-      await delay(Math.min(1500 * Math.pow(2, attempt - 1), 8000) + randomInt(500, 1500));
+      if (attempt >= FETCH.maxRetries) throw error;
+      const backoff = Math.min(FETCH.retryBaseMs * Math.pow(2, attempt - 1), FETCH.retryMaxMs);
+      await delay(backoff + randomInt(FETCH.retryJitterMin, FETCH.retryJitterMax));
     }
   }
   throw new Error("抓取失败");
