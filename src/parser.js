@@ -47,6 +47,7 @@ export function htmlToText(root) {
   text = text.replace(/\n{3,}/g, "\n\n");
   text = text.replace(/^\s+|\s+$/g, "");
 
+  // Discuz 在 textContent 里混入了这些 UI 文字，不属于帖子正文，需要清掉。
   const noisePatterns = [
     /本帖最后由.+?编辑/g,
     /电梯直达/g,
@@ -126,6 +127,7 @@ export function extractFrontMatter(doc) {
 
   const cleanFragment = message.cloneNode(true);
   cleanPostFragment(cleanFragment);
+  // 只扫前 40 行，避免长文正文里的"作者："之类句子被误识别为元数据。
   const lines = extractStructuredLines(cleanFragment).slice(0, 40);
 
   lines.forEach((line) => {

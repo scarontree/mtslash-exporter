@@ -33,6 +33,7 @@ export function normalizeFrontMatter(frontMatter, context) {
   return normalized;
 }
 
+// uid 模式只在 targetUid 有值时才加括号，避免出现"张三 (undefined)"。
 export function resolveMainAuthor({ authorMode, normalizedFrontMatter, context, posts, targetUid }) {
   if (authorMode === "lz") {
     return normalizedFrontMatter["作者"] || context.lzName;

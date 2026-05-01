@@ -2,6 +2,8 @@ import { createZip } from "./zip.js";
 import { escapeXml, escapeAttribute } from "./utils.js";
 import { normalizeFrontMatter, resolveMainAuthor } from "./frontmatter.js";
 
+// 不是真正的 UUID，用 FNV-1a 哈希生成确定性假 UUID。
+// 同一个帖子（tid+标题+作者）始终产生相同的 bookId，阅读器可用来去重重复下载。
 function makeUuidLike(...parts) {
   const seed = parts.join("|");
   let hash = 2166136261 >>> 0;

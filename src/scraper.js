@@ -196,6 +196,8 @@ function parsePageValue(urlLike) {
 
 // ─── Pager ──────────────────────────────────────────────────────────────────
 
+// 页面可能同时存在多个 .pg/.page（顶部和底部各一个），用评分选最像真正分页器的：
+// 同帖链接 +3、页码输入框 +2、移动端下拉 +4（加选项数量）、纯数字节点 +1。
 function findThreadPager(doc, currentUrl) {
   const pagers = Array.from(doc.querySelectorAll(".pg, .page"));
   if (!pagers.length) return null;
@@ -326,6 +328,7 @@ function detectCharset(response) {
   const contentType = response.headers.get("content-type") || "";
   const headerMatch = contentType.match(/charset=([^;]+)/i);
   if (headerMatch) return normalizeCharset(headerMatch[1]);
+  // mtslash 实际用 GBK 编码，但 Content-Type 头经常不声明 charset。
   if (location.hostname === "www.mtslash.life") return "gbk";
   return "utf-8";
 }
@@ -341,9 +344,13 @@ export function decodeHtml(buffer, response) {
 
 // ─── _dsign challenge ───────────────────────────────────────────────────────
 
+// 站点有时会在正文页前注入一个只有几百字节的跳转页，页内 JS 计算 _dsign token
+// 再 location.replace 到真实页面。这里模拟执行那段脚本来拿到跳转目标 URL，
+// 避免用户看到"请稍候"后导出卡住。
 export function extractDsignChallengeUrl(html, originalUrl) {
   if (html.length > 5000) return null;
   if (!html.includes("location") || !html.includes("replace")) return null;
+  // 如果页面包含正文特征字段，说明这是真实帖子页，不是跳转页。
   if (html.includes("postmessage_") || html.includes("thread_subject")) return null;
 
   try {
@@ -353,6 +360,7 @@ export function extractDsignChallengeUrl(html, originalUrl) {
 
     let locationUrl = null;
     let windowUrl = null;
+    // 用 Proxy 拦截 location/window 赋值，避免脚本真正修改当前页面状态。
     const locationProxy = new Proxy({}, {
       set(_target, _prop, value) {
         if (typeof value === "string" && value.includes("thread-")) locationUrl = value;
@@ -450,6 +458,7 @@ export function extractThreadContext(doc, url) {
   let lzUid = null;
   let lzName = null;
 
+  // 三级回退：#tath 头部链接（最可靠）→ "只看楼主"链接的 authorid → 第一楼作者。
   const tathHeader = doc.querySelector("#tath");
   if (tathHeader) {
     const tathLinks = tathHeader.querySelectorAll('a[href*="space-uid-"], a[href*="mod=space"]');
@@ -489,6 +498,7 @@ export function extractThreadContext(doc, url) {
     }
   }
 
+  // 部分 DOM 路径会把按钮文字当成用户名读出来，过滤掉。
   const uiNoiseNames = ["只看楼主", "只看该作者", "收藏", "回复", "举报", "未知作者"];
   if (lzName && uiNoiseNames.includes(lzName)) lzName = null;
 

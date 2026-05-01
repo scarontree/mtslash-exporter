@@ -37,6 +37,8 @@ function writeUint32(view, offset, value) {
   view.setUint32(offset, value >>> 0, true);
 }
 
+// 所有条目均用 STORED 模式（不压缩）。EPUB 规范要求 mimetype 必须 STORED，
+// 其余文件都是小文本，省掉 deflate 实现更简单，体积影响也可忽略。
 export function createZip(entries) {
   const encoder = new TextEncoder();
   const localParts = [];
