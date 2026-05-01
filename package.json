@@ -1,0 +1,13 @@
+{
+  "name": "mtslash-exporter",
+  "version": "1.0.3",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.js",
+    "watch": "node scripts/build.js --watch"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  }
+}
