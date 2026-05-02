@@ -1,18 +1,25 @@
 import { createZip } from "./zip.js";
-import { escapeXml, escapeAttribute } from "./utils.js";
-import { normalizeFrontMatter, resolveMainAuthor } from "./frontmatter.js";
+import { escapeXml } from "./utils.js";
+import { normalizeFrontMatter, resolveMainAuthor, buildInfoRows } from "./frontmatter.js";
 
-// 不是真正的 UUID，用 FNV-1a 哈希生成确定性假 UUID。
-// 同一个帖子（tid+标题+作者）始终产生相同的 bookId，阅读器可用来去重重复下载。
+// ─── 工具函数 ─────────────────────────────────────────────────────────────────
+
+// 用 FNV-1a 哈希生成确定性 UUID。同一个帖子（tid+标题+作者）始终产生相同的 bookId，
+// 阅读器可用来去重重复下载。两轮不同 salt 扩展到 64 位，满足 8-4-4-4-12 格式。
 function makeUuidLike(...parts) {
   const seed = parts.join("|");
-  let hash = 2166136261 >>> 0;
-  for (let i = 0; i < seed.length; i += 1) {
-    hash ^= seed.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
-  }
-  const hex = (`00000000${(hash >>> 0).toString(16)}`).slice(-8);
-  return `${hex}${hex.slice(0, 4)}-${hex.slice(4, 8)}-4000-8000-${hex}${hex}`;
+  const fnv = (extra) => {
+    let h = 2166136261 >>> 0;
+    for (let i = 0; i < seed.length; i += 1) {
+      h ^= seed.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    h ^= extra;
+    return (Math.imul(h, 16777619) >>> 0).toString(16).padStart(8, "0");
+  };
+  const a = fnv(1);
+  const b = fnv(2);
+  return `${a}-${b.slice(0, 4)}-4${b.slice(4, 7)}-8${a.slice(0, 3)}-${b}${a.slice(0, 4)}`;
 }
 
 function textToXhtml(text) {
@@ -36,6 +43,8 @@ function wrapXhtmlDocument(title, bodyInnerHtml) {
   </body>
 </html>`;
 }
+
+// ─── EPUB XML 模板 ────────────────────────────────────────────────────────────
 
 function renderContainerXml() {
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -71,25 +80,9 @@ function renderNavPage(title, chapters) {
 }
 
 function renderInfoPage(context, frontMatter, failures, partial, mainAuthor) {
-  const infoRows = [];
-  infoRows.push(["标题", context.title]);
-  infoRows.push(["作者", mainAuthor]);
-  infoRows.push(["来源", context.canonicalUrl || context.currentUrl]);
-  Object.entries(frontMatter).forEach(([key, value]) => {
-    if (!value || key === "标题") return;
-    if (key === "作者" && value === mainAuthor) return;
-    infoRows.push([key, value]);
-  });
-  if (partial) {
-    infoRows.push(["状态", "部分导出"]);
-    if (failures.length) {
-      infoRows.push(["失败页", failures.map((item) => item.page).join(", ")]);
-    }
-  }
-
-  const rowsHtml = infoRows.map(([key, value]) => (
-    `<tr><th>${escapeXml(key)}</th><td>${escapeXml(value)}</td></tr>`
-  )).join("");
+  const rowsHtml = buildInfoRows(context, frontMatter, mainAuthor, failures, partial)
+    .map(([key, value]) => `<tr><th>${escapeXml(key)}</th><td>${escapeXml(value)}</td></tr>`)
+    .join("");
 
   return wrapXhtmlDocument("作品信息", `
       <section class="meta-page">
@@ -152,6 +145,8 @@ function renderChapterXhtml(_bookTitle, chapter) {
     `);
 }
 
+// ─── 章节拆分 ─────────────────────────────────────────────────────────────────
+
 function isHeadingLine(line, headingRegex) {
   const value = String(line || "").trim();
   if (!value || value.length > 80 || !headingRegex) return false;
@@ -159,68 +154,34 @@ function isHeadingLine(line, headingRegex) {
   return headingRegex.test(value);
 }
 
-function splitPostIntoSegments(text, headingRegex) {
-  const lines = String(text || "").split(/\n+/).map((line) => line.trim());
-  const segments = [];
-  let currentHeading = "";
-  let currentLines = [];
-
-  lines.forEach((line) => {
-    if (!line) {
-      if (currentLines.length) currentLines.push("");
-      return;
-    }
-    if (isHeadingLine(line, headingRegex)) {
-      if (currentLines.length) {
-        segments.push({
-          headingTitle: currentHeading,
-          body: currentLines.join("\n").replace(/\n{3,}/g, "\n\n").trim(),
-        });
-      }
-      currentHeading = line;
-      currentLines = [];
-      return;
-    }
-    currentLines.push(line);
-  });
-
-  if (currentHeading || currentLines.length) {
-    segments.push({
-      headingTitle: currentHeading,
-      body: currentLines.join("\n").replace(/\n{3,}/g, "\n\n").trim(),
-    });
-  }
-
-  return segments.filter((segment) => segment.headingTitle || segment.body);
-}
-
+// 把所有 post.text 拼成一段后单遍扫行，直接处理跨帖的章节延续。
 function buildRegexEpubChapters(posts, headingRegex) {
+  const allLines = posts.map((p) => p.text).join("\n\n").split(/\n+/).map((l) => l.trim());
   const chapters = [];
-  let current = null;
+  let curHeading = "";
+  let curLines = [];
 
-  posts.forEach((post) => {
-    const segments = splitPostIntoSegments(post.text, headingRegex);
-    if (!segments.length) return;
+  const flush = () => {
+    const body = curLines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+    if (curHeading || body) chapters.push({ headingTitle: curHeading, body });
+    curHeading = "";
+    curLines = [];
+  };
 
-    segments.forEach((segment) => {
-      if (segment.headingTitle) {
-        if (current && current.body.trim()) chapters.push(current);
-        current = { headingTitle: segment.headingTitle, body: segment.body };
-        return;
-      }
-      if (!current) {
-        current = { headingTitle: "", body: segment.body };
-        return;
-      }
-      current.body = `${current.body}\n\n${segment.body}`.trim();
-    });
-  });
+  for (const line of allLines) {
+    if (isHeadingLine(line, headingRegex)) {
+      flush();
+      curHeading = line;
+    } else if (line) {
+      curLines.push(line);
+    } else if (curLines.length) {
+      curLines.push("");
+    }
+  }
+  flush();
 
-  if (current && current.body.trim()) chapters.push(current);
-
-  const usefulChapters = chapters.filter((chapter) => chapter.body && chapter.body.trim());
-  if (usefulChapters.length <= 1) return [];
-  return usefulChapters;
+  const useful = chapters.filter((c) => c.body);
+  return useful.length > 1 ? useful : [];
 }
 
 function buildEpubChapters(posts, chapterMode, customHeadingRegex) {
@@ -243,6 +204,8 @@ function buildEpubChapters(posts, chapterMode, customHeadingRegex) {
     body: post.text,
   }));
 }
+
+// ─── 主构建入口 ───────────────────────────────────────────────────────────────
 
 export function buildEpub({ context, posts, authorMode, chapterMode, customHeadingRegex, targetUid, frontMatter, failures, partial }) {
   const normalizedFrontMatter = normalizeFrontMatter(frontMatter, context);

@@ -1,3 +1,5 @@
+// ─── CRC-32 ───────────────────────────────────────────────────────────────────
+
 const CRC_TABLE = (function createCrc32Table() {
   const table = new Uint32Array(256);
   for (let i = 0; i < 256; i += 1) {
@@ -18,6 +20,8 @@ function crc32(bytes) {
   return (crc ^ 0xffffffff) >>> 0;
 }
 
+// ─── 写入工具 ─────────────────────────────────────────────────────────────────
+
 function concatUint8Arrays(parts) {
   const totalLength = parts.reduce((sum, part) => sum + part.length, 0);
   const result = new Uint8Array(totalLength);
@@ -29,13 +33,7 @@ function concatUint8Arrays(parts) {
   return result;
 }
 
-function writeUint16(view, offset, value) {
-  view.setUint16(offset, value, true);
-}
-
-function writeUint32(view, offset, value) {
-  view.setUint32(offset, value >>> 0, true);
-}
+// ─── ZIP 打包 ─────────────────────────────────────────────────────────────────
 
 // 所有条目均用 STORED 模式（不压缩）。EPUB 规范要求 mimetype 必须 STORED，
 // 其余文件都是小文本，省掉 deflate 实现更简单，体积影响也可忽略。
@@ -51,18 +49,18 @@ export function createZip(entries) {
     const dataBytes = typeof entry.data === "string" ? encoder.encode(entry.data) : new Uint8Array(entry.data);
     const crc = crc32(dataBytes);
     const localHeader = new Uint8Array(30 + nameBytes.length);
-    const localView = new DataView(localHeader.buffer);
-    writeUint32(localView, 0, 0x04034b50);
-    writeUint16(localView, 4, 20);
-    writeUint16(localView, 6, 0);
-    writeUint16(localView, 8, 0);
-    writeUint16(localView, 10, 0);
-    writeUint16(localView, 12, 0);
-    writeUint32(localView, 14, crc);
-    writeUint32(localView, 18, dataBytes.length);
-    writeUint32(localView, 22, dataBytes.length);
-    writeUint16(localView, 26, nameBytes.length);
-    writeUint16(localView, 28, 0);
+    const v = new DataView(localHeader.buffer);
+    v.setUint32(0, 0x04034b50, true);
+    v.setUint16(4, 20, true);
+    v.setUint16(6, 0, true);
+    v.setUint16(8, 0, true);
+    v.setUint16(10, 0, true);
+    v.setUint16(12, 0, true);
+    v.setUint32(14, crc, true);
+    v.setUint32(18, dataBytes.length, true);
+    v.setUint32(22, dataBytes.length, true);
+    v.setUint16(26, nameBytes.length, true);
+    v.setUint16(28, 0, true);
     localHeader.set(nameBytes, 30);
     localParts.push(localHeader, dataBytes);
 
@@ -71,42 +69,41 @@ export function createZip(entries) {
   });
 
   const centralOffset = offset;
-  let centralSize = 0;
   records.forEach((record) => {
     const header = new Uint8Array(46 + record.nameBytes.length);
-    const view = new DataView(header.buffer);
-    writeUint32(view, 0, 0x02014b50);
-    writeUint16(view, 4, 20);
-    writeUint16(view, 6, 20);
-    writeUint16(view, 8, 0);
-    writeUint16(view, 10, 0);
-    writeUint16(view, 12, 0);
-    writeUint16(view, 14, 0);
-    writeUint32(view, 16, record.crc);
-    writeUint32(view, 20, record.dataBytes.length);
-    writeUint32(view, 24, record.dataBytes.length);
-    writeUint16(view, 28, record.nameBytes.length);
-    writeUint16(view, 30, 0);
-    writeUint16(view, 32, 0);
-    writeUint16(view, 34, 0);
-    writeUint16(view, 36, 0);
-    writeUint32(view, 38, 0);
-    writeUint32(view, 42, record.offset);
+    const v = new DataView(header.buffer);
+    v.setUint32(0, 0x02014b50, true);
+    v.setUint16(4, 20, true);
+    v.setUint16(6, 20, true);
+    v.setUint16(8, 0, true);
+    v.setUint16(10, 0, true);
+    v.setUint16(12, 0, true);
+    v.setUint16(14, 0, true);
+    v.setUint32(16, record.crc, true);
+    v.setUint32(20, record.dataBytes.length, true);
+    v.setUint32(24, record.dataBytes.length, true);
+    v.setUint16(28, record.nameBytes.length, true);
+    v.setUint16(30, 0, true);
+    v.setUint16(32, 0, true);
+    v.setUint16(34, 0, true);
+    v.setUint16(36, 0, true);
+    v.setUint32(38, 0, true);
+    v.setUint32(42, record.offset, true);
     header.set(record.nameBytes, 46);
     centralParts.push(header);
-    centralSize += header.length;
   });
 
+  const centralSize = centralParts.reduce((s, p) => s + p.length, 0);
   const end = new Uint8Array(22);
-  const endView = new DataView(end.buffer);
-  writeUint32(endView, 0, 0x06054b50);
-  writeUint16(endView, 4, 0);
-  writeUint16(endView, 6, 0);
-  writeUint16(endView, 8, records.length);
-  writeUint16(endView, 10, records.length);
-  writeUint32(endView, 12, centralSize);
-  writeUint32(endView, 16, centralOffset);
-  writeUint16(endView, 20, 0);
+  const ev = new DataView(end.buffer);
+  ev.setUint32(0, 0x06054b50, true);
+  ev.setUint16(4, 0, true);
+  ev.setUint16(6, 0, true);
+  ev.setUint16(8, records.length, true);
+  ev.setUint16(10, records.length, true);
+  ev.setUint32(12, centralSize, true);
+  ev.setUint32(16, centralOffset, true);
+  ev.setUint16(20, 0, true);
 
   return concatUint8Arrays([...localParts, ...centralParts, end]);
 }

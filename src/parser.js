@@ -1,5 +1,5 @@
 import { textOf } from "./utils.js";
-import { orderFrontMatter, FRONT_MATTER_ALIASES, KNOWN_FIELD_ORDER } from "./frontmatter.js";
+import { orderFrontMatter, FRONT_MATTER_ALIASES } from "./frontmatter.js";
 import {
   collectPostNodes,
   findMessageNode,
@@ -136,8 +136,7 @@ export function extractFrontMatter(doc) {
     const rawKey = match[1].trim();
     const value = match[2].trim();
     if (!value) return;
-    const normalizedKey = aliasMap[rawKey] || rawKey;
-    if (!KNOWN_FIELD_ORDER.includes(normalizedKey) && rawKey.length > 8) return;
+    const normalizedKey = FRONT_MATTER_ALIASES[rawKey] || rawKey;
     if (!(normalizedKey in result)) result[normalizedKey] = value;
   });
 

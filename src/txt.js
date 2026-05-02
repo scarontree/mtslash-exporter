@@ -1,37 +1,16 @@
 import { sanitizeFilename } from "./utils.js";
-import { normalizeFrontMatter, resolveMainAuthor } from "./frontmatter.js";
+import { normalizeFrontMatter, resolveMainAuthor, buildInfoRows } from "./frontmatter.js";
+
+// ─── 渲染 ─────────────────────────────────────────────────────────────────────
 
 export function renderTxt({ context, posts, authorMode, targetUid, frontMatter, failures, partial }) {
   const lines = [];
   const normalizedFrontMatter = normalizeFrontMatter(frontMatter, context);
   const mainAuthor = resolveMainAuthor({ authorMode, normalizedFrontMatter, context, posts, targetUid });
 
-  lines.push(`标题: ${context.title}`);
-  lines.push(`作者: ${mainAuthor}`);
-  lines.push(`来源: ${context.canonicalUrl || context.currentUrl}`);
+  const infoRows = buildInfoRows(context, normalizedFrontMatter, mainAuthor, failures, partial);
+  infoRows.forEach(([key, value]) => lines.push(`${key}: ${value}`));
   lines.push("");
-
-  const fmEntries = Object.entries(normalizedFrontMatter || {}).filter(([key, value]) => {
-    if (!value) return false;
-    if (key === "标题") return false;
-    if (key === "作者" && value === mainAuthor) return false;
-    return true;
-  });
-  if (fmEntries.length) {
-    lines.push("作品信息:");
-    fmEntries.forEach(([key, value]) => {
-      lines.push(`${key}: ${value}`);
-    });
-    lines.push("");
-  }
-
-  if (partial) {
-    lines.push("状态: 部分导出");
-    if (failures.length) {
-      lines.push(`失败页: ${failures.map((item) => item.page).join(", ")}`);
-    }
-    lines.push("");
-  }
 
   lines.push("==================================================");
   lines.push("");
@@ -50,6 +29,8 @@ export function renderTxt({ context, posts, authorMode, targetUid, frontMatter, 
 
   return lines.join("\n").replace(/\n{3,}/g, "\n\n");
 }
+
+// ─── 文件名 ───────────────────────────────────────────────────────────────────
 
 export function buildFilename(title, authorMode, authorName, format) {
   const ext = format === "epub" ? "epub" : "txt";
